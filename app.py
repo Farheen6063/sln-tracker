@@ -21,7 +21,7 @@ if uploaded_file is not None:
             # Fallback to the first sheet if TOTAL WORK isn't found
             df = pd.read_excel(uploaded_file, sheet_name=0, skiprows=2)
             
-        # Clean column names (strip spaces and convert to uppercase for consistency)
+        # Clean column names (strip spaces and convert to string)
         df.columns = [str(c).strip() for c in df.columns]
         
         # Drop rows where essential columns are completely null
@@ -34,9 +34,9 @@ if uploaded_file is not None:
         if 'WORKER NAME' in df.columns:
             df['WORKER NAME'] = df['WORKER NAME'].astype(str).str.strip()
             # Remove filler stars or empty names
-            df = df[~df['WORKER NAME'].isin(['*', 'nan', ''] scenery)]
+            df = df[~df['WORKER NAME'].isin(['*', 'nan', ''])]
             
-        # Clean Amount column (convert 'D' or deals to 0 if text, or force numeric)
+        # Clean Amount column (convert to numeric, handle errors gracefully)
         df['AMOUNT'] = pd.to_numeric(df['AMOUNT'], errors='coerce').fillna(0)
         
         st.success("Aunt's Salon Sheet loaded successfully!")
