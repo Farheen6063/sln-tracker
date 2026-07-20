@@ -4,11 +4,11 @@ import pandas as pd
 st.set_page_config(page_title="Salon Management Dashboard", layout="wide")
 
 st.title("✂️ Salon Management & Tracker Dashboard")
-st.write("Filter salon records easily by Date, Worker Name, or Department!")
+st.write("Filter salon records easily by Date, Worker Name, or Department with Auto-Error Detection!")
 
 uploaded_file = st.file_uploader("Upload Salon Excel File (.xlsx)", type=["xlsx"])
 
-# Automatic mapping of workers to their departments
+# Master database of correct departments for each worker
 WORKER_DEPT_MAPPING = {
     'SAFINA': 'HAIR DEPARTMENT', 'SARA': 'HAIR DEPARTMENT',
     'SAMINA': 'SKIN DEPARTMENT', 'FARZANA': 'SKIN DEPARTMENT', 'NABEELA': 'SKIN DEPARTMENT', 'MARYAM': 'SKIN DEPARTMENT',
@@ -20,13 +20,11 @@ WORKER_DEPT_MAPPING = {
 
 if uploaded_file is not None:
     try:
-        # Load 'TOTAL WORK' master sheet
         xls = pd.ExcelFile(uploaded_file)
         target_sheet = 'TOTAL WORK' if 'TOTAL WORK' in xls.sheet_names else xls.sheet_names[0]
         
         df_raw = pd.read_excel(uploaded_file, sheet_name=target_sheet)
         
-        # Find the header row dynamically
         header_row_index = 0
         for i in range(len(df_raw)):
             row_values = [str(val).strip().upper() for val in df_raw.iloc[i].values]
@@ -34,17 +32,15 @@ if uploaded_file is not None:
                 header_row_index = i + 1
                 break
         
-        # Re-read data with correct headers
         df = pd.read_excel(uploaded_file, sheet_name=target_sheet, skiprows=header_row_index)
         df.columns = [str(c).strip().upper() for c in df.columns]
         
         if 'WORKER NAME' in df.columns:
-            # Clean up names
             df['WORKER NAME'] = df['WORKER NAME'].astype(str).str.strip().str.upper()
             df['WORKER NAME'] = df['WORKER NAME'].str.replace(r'\s+G$', '', regex=True)
             df = df[~df['WORKER NAME'].isin(['*', 'NAN', '', 'NONE'])]
             
-            # Map departments
+            # 1. Excel sheet ke data ke mutabiq jo mapped department banta hai woh lagayein
             df['DEPARTMENT'] = df['WORKER NAME'].map(WORKER_DEPT_MAPPING).fillna('OTHER / DEALS')
         else:
             st.error("Could not find 'WORKER NAME' column.")
@@ -52,7 +48,6 @@ if uploaded_file is not None:
 
         if 'DATE' in df.columns:
             df['DATE'] = df['DATE'].ffill()
-            # Clean date display (remove trailing decimals if numbers)
             df['DATE'] = df['DATE'].apply(lambda x: str(int(x)) if isinstance(x, (int, float)) else str(x).split(' ')[0])
         else:
             st.error("Could not find 'DATE' column.")
@@ -66,12 +61,9 @@ if uploaded_file is not None:
         # --- SIDEBAR GLOBAL DATE FILTER ---
         st.sidebar.header("📅 Global Date Filter")
         unique_dates = sorted(df['DATE'].unique(), key=lambda x: int(x) if x.isdigit() else x)
-        
-        # Option to view the whole month or a specific date
         date_options = ["Show Full Month"] + unique_dates
         selected_date = st.sidebar.selectbox("Choose a specific Date/Day:", date_options)
         
-        # Apply date filter globally if a specific day is selected
         if selected_date != "Show Full Month":
             filtered_df = df[df['DATE'] == selected_date]
             st.info(f"Showing results only for **Day/Date: {selected_date}**")
@@ -96,37 +88,54 @@ if uploaded_file is not None:
                 col2.metric(f"Total Revenue Generated", f"Rs. {worker_df['AMOUNT'].sum():,.0f}")
                 
                 st.dataframe(worker_df, use_container_width=True)
-                
-                csv_worker = worker_df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label=f"📥 Download {selected_worker}'s List",
-                    data=csv_worker,
-                    file_name=f"{selected_worker}_Day_{selected_date}_Report.csv",
-                    mime="text/csv"
-                )
             else:
                 st.warning("No worker data found for the selected date.")
             
-        # 2. DEPARTMENT-WISE VIEW
+        # 2. DEPARTMENT-WISE VIEW (WITH SMART CROSS FILTER & ERROR CHECK)
         with tab2:
-            st.subheader("Extract Department Records")
+            st.subheader("Extract Department Records & Detect Entry Errors")
             unique_depts = sorted([str(d) for d in filtered_df['DEPARTMENT'].unique()])
             
             if unique_depts:
                 selected_dept = st.selectbox("Select Department:", unique_depts)
                 dept_df = filtered_df[filtered_df['DEPARTMENT'] == selected_dept]
                 
+                # Dynamic options for workers found inside this department's entries
+                workers_in_this_dept = dept_df['WORKER NAME'].unique()
+                
+                # Smart Labels create karein jo galti ko spot karein!
+                worker_options = ["Show All Workers of this Department"]
+                for w in sorted(workers_in_this_dept):
+                    correct_dept = WORKER_DEPT_MAPPING.get(w, 'OTHER / DEALS')
+                    if correct_dept != selected_dept and selected_dept != 'OTHER / DEALS':
+                        # Galti mil gayi! Label badal do alert ke sath
+                        worker_options.append(f"⚠️ {w} (Asal Dept: {correct_dept})")
+                    else:
+                        worker_options.append(w)
+                
+                selected_worker_filter = st.selectbox("Filter by Specific Worker inside this Department:", worker_options)
+                
+                # Apply worker sub-filter
+                if selected_worker_filter != "Show All Workers of this Department":
+                    actual_worker_name = selected_worker_filter.split(" ")[1] if "⚠️" in selected_worker_filter else selected_worker_filter
+                    final_dept_df = dept_df[dept_df['WORKER NAME'] == actual_worker_name]
+                    
+                    if "⚠️" in selected_worker_filter:
+                        st.error(f"🚨 **Check and Balance Alert:** {actual_worker_name} asal mein `{WORKER_DEPT_MAPPING.get(actual_worker_name)}` ki worker hai, par counter wale ne aaj iska kaam `{selected_dept}` mein enter kiya hai!")
+                else:
+                    final_dept_df = dept_df
+                
                 col1, col2 = st.columns(2)
-                col1.metric(f"Total Services in {selected_dept}", len(dept_df))
-                col2.metric(f"Total Department Revenue", f"Rs. {dept_df['AMOUNT'].sum():,.0f}")
+                col1.metric(f"Total Services Selected", len(final_dept_df))
+                col2.metric(f"Total Selected Revenue", f"Rs. {final_dept_df['AMOUNT'].sum():,.0f}")
                 
-                st.dataframe(dept_df, use_container_width=True)
+                st.dataframe(final_dept_df, use_container_width=True)
                 
-                csv_dept = dept_df.to_csv(index=False).encode('utf-8')
+                csv_dept = final_dept_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label=f"📥 Download {selected_dept} List",
+                    label=f"📥 Download Current View Report",
                     data=csv_dept,
-                    file_name=f"{selected_dept}_Day_{selected_date}_Report.csv",
+                    file_name=f"{selected_dept}_Filtered_Report.csv",
                     mime="text/csv"
                 )
             else:
@@ -139,14 +148,6 @@ if uploaded_file is not None:
             col1.metric("Total Salon Services", len(filtered_df))
             col2.metric("Total Salon Gross Income", f"Rs. {filtered_df['AMOUNT'].sum():,.0f}")
             st.dataframe(filtered_df, use_container_width=True)
-            
-            csv_full = filtered_df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Download This View's Dataset",
-                data=csv_full,
-                file_name=f"Salon_Day_{selected_date}_Report.csv",
-                mime="text/csv"
-            )
             
     except Exception as e:
         st.error(f"Error reading file structure: {e}")
