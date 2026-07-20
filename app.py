@@ -11,104 +11,99 @@ uploaded_file = st.file_uploader("Upload Salon Excel File (.xlsx)", type=["xlsx"
 
 if uploaded_file is not None:
     try:
-        # Check if 'TOTAL WORK' master sheet exists
+        # Load the Excel file
         xls = pd.ExcelFile(uploaded_file)
         
-        if 'TOTAL WORK' in xls.sheet_names:
-            # Load the main master sheet
-            df = pd.read_excel(uploaded_file, sheet_name='TOTAL WORK', skiprows=2)
-        else:
-            # Fallback to the first sheet if TOTAL WORK isn't found
-            df = pd.read_excel(uploaded_file, sheet_name=0, skiprows=2)
+        # Check if 'TOTAL WORK' exists, otherwise take the first sheet
+        target_sheet = 'TOTAL WORK' if 'TOTAL WORK' in xls.sheet_names else xls.sheet_names[0]
+        
+        # Read data starting right from where headers are (Row index 2)
+        df = pd.read_excel(uploaded_file, sheet_name=target_sheet, skiprows=2)
+        
+        # Clean column names (strip spaces and uppercase for safety)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # Forward fill the DATE column (Excel merged cells fix)
+        if 'DATE' in df.columns:
+            df['DATE'] = df['DATE'].ffill()
             
-        # Clean column names (strip spaces and convert to string)
-        df.columns = [str(c).strip() for c in df.columns]
-        
-        # Drop rows where essential columns are completely null
-        df = df.dropna(subset=['WORK', 'AMOUNT'], how='all')
-        
-        # Forward fill the Date column since Excel leaves merged/blank rows for same day
-        df['DATE'] = df['DATE'].ffill()
-        
-        # Clean up Worker Name column
+        # Clean Worker Name column if exists
         if 'WORKER NAME' in df.columns:
             df['WORKER NAME'] = df['WORKER NAME'].astype(str).str.strip()
-            # Remove filler stars or empty names
-            df = df[~df['WORKER NAME'].isin(['*', 'nan', ''])]
+            df = df[~df['WORKER NAME'].isin(['*', 'nan', '', 'None'])]
             
-        # Clean Amount column (convert to numeric, handle errors gracefully)
-        df['AMOUNT'] = pd.to_numeric(df['AMOUNT'], errors='coerce').fillna(0)
-        
-        st.success("Aunt's Salon Sheet loaded successfully!")
+        # Clean Amount column if exists
+        if 'AMOUNT' in df.columns:
+            df['AMOUNT'] = pd.to_numeric(df['AMOUNT'], errors='coerce').fillna(0)
+            
+        st.success(f"Successfully loaded '{target_sheet}' sheet!")
         
         # --- 📅 DATE FILTER ---
-        # Get unique dates/days available
-        unique_days = sorted(df['DATE'].dropna().unique())
-        selected_day = st.selectbox("📅 Select Day/Date of the Month:", unique_days)
-        
-        # Filter dataframe by selected day
-        df_date = df[df['DATE'] == selected_day]
-        
-        if df_date.empty:
-            st.warning(f"No records found for Day: {selected_day}")
-        else:
-            # Create Tabs for Views
-            tab1, tab2 = st.tabs(["👤 Individual Worker View", "📋 Complete Day Overview"])
+        if 'DATE' in df.columns:
+            unique_days = sorted(df['DATE'].dropna().unique())
+            selected_day = st.selectbox("📅 Select Day/Date of the Month:", unique_days)
             
-            with tab1:
-                st.subheader(f"Filter Worker Data for Day {selected_day}")
-                if 'WORKER NAME' in df_date.columns:
-                    unique_workers = sorted(df_date['WORKER NAME'].unique())
-                    selected_worker = st.selectbox("Select salon worker:", unique_workers)
-                    
-                    worker_df = df_date[df_date['WORKER NAME'] == selected_worker]
-                    
-                    # Metrics
-                    total_tickets = len(worker_df)
-                    total_revenue = worker_df['AMOUNT'].sum()
+            # Filter rows for that day
+            df_date = df[df['DATE'] == selected_day]
+            
+            if df_date.empty:
+                st.warning(f"No records found for Day: {selected_day}")
+            else:
+                # Create Tabs
+                tab1, tab2 = st.tabs(["👤 Individual Worker View", "📋 Complete Day Overview"])
+                
+                with tab1:
+                    st.subheader(f"Filter Worker Data for Day {selected_day}")
+                    if 'WORKER NAME' in df_date.columns:
+                        unique_workers = sorted(df_date['WORKER NAME'].unique())
+                        selected_worker = st.selectbox("Select salon worker:", unique_workers)
+                        
+                        worker_df = df_date[df_date['WORKER NAME'] == selected_worker]
+                        
+                        # Metrics
+                        total_tickets = len(worker_df)
+                        total_revenue = worker_df['AMOUNT'].sum() if 'AMOUNT' in worker_df.columns else 0
+                        
+                        col1, col2 = st.columns(2)
+                        col1.metric("Total Services Done", f"{total_tickets}")
+                        col2.metric("Total Revenue Earned", f"Rs. {total_revenue:,.0f}")
+                        
+                        # Show Clean Table
+                        st.dataframe(worker_df, use_container_width=True)
+                        
+                        # Download button
+                        csv = worker_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label=f"📥 Download {selected_worker}'s Report (Day {selected_day})",
+                            data=csv,
+                            file_name=f"{selected_worker}_Day_{selected_day}.csv",
+                            mime="text/csv",
+                        )
+                    else:
+                        st.error("WORKER NAME column not found in this sheet.")
+                        
+                with tab2:
+                    st.subheader(f"All Salon Activities for Day {selected_day}")
+                    day_tickets = len(df_date)
+                    day_revenue = df_date['AMOUNT'].sum() if 'AMOUNT' in df_date.columns else 0
                     
                     col1, col2 = st.columns(2)
-                    col1.metric("Total Services Done", f"{total_tickets}")
-                    col2.metric("Total Revenue Earned", f"Rs. {total_revenue:,.0f}")
+                    col1.metric("Total Salon Services (Day)", f"{day_tickets}")
+                    col2.metric("Total Salon Revenue (Day)", f"Rs. {day_revenue:,.0f}")
                     
-                    # Display Table cleanly
-                    display_cols = [c for c in ['DATE', 'WORK', 'SLIP NO.', 'BY. NAME', 'AMOUNT', 'CILENT NAME'] if c in worker_df.columns]
-                    st.dataframe(worker_df[display_cols], use_container_width=True)
+                    st.dataframe(df_date, use_container_width=True)
                     
-                    # Download Button for specific worker on that day
-                    csv = worker_df[display_cols].to_csv(index=False).encode('utf-8')
+                    csv_day = df_date.to_csv(index=False).encode('utf-8')
                     st.download_button(
-                        label=f"📥 Download {selected_worker}'s Report (Day {selected_day})",
-                        data=csv,
-                        file_name=f"{selected_worker}_Day_{selected_day}_Report.csv",
+                        label=f"📥 Download Full Dataset (Day {selected_day})",
+                        data=csv_day,
+                        file_name=f"Full_Salon_Day_{selected_day}.csv",
                         mime="text/csv",
                     )
-                else:
-                    st.error("Worker Name column missing in the sheet.")
-                
-            with tab2:
-                st.subheader(f"All Salon Activities for Day {selected_day}")
-                
-                # Overall metrics for the day
-                day_tickets = len(df_date)
-                day_revenue = df_date['AMOUNT'].sum()
-                
-                col1, col2 = st.columns(2)
-                col1.metric("Total Salon Services (Day)", f"{day_tickets}")
-                col2.metric("Total Salon Revenue (Day)", f"Rs. {day_revenue:,.0f}")
-                
-                # Display full table for that day
-                st.dataframe(df_date, use_container_width=True)
-                
-                # Download Button for full day
-                csv_day = df_date.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label=f"📥 Download Full Dataset (Day {selected_day})",
-                    data=csv_day,
-                    file_name=f"Full_Salon_Day_{selected_day}_Report.csv",
-                    mime="text/csv",
-                )
+        else:
+            st.error("DATE column not found in the sheet. Please make sure the sheet has a DATE column.")
+            
     except Exception as e:
-        st.error(f"Error processing file: {e}. Please ensure the sheet structure is correct.")
+        st.error(f"Error processing file: {e}")
 else:
-    st.info("Awaiting Excel file upload. Please upload 'Month Of July Work.xlsx' to begin.")
+    st.info("Awaiting Excel file upload. Please upload your salon file to begin.")
